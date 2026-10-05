@@ -9,8 +9,29 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .errors import DomainError, ValidationError
+from .governance import OversightService
 from .service import DomainService
 from .storage import Database
+
+
+# 监管域写入路由：路径 -> (服务方法名, 资源类型)
+GOVERNANCE_WRITES = {
+    "/ai/applications": "register_application",
+    "/ai/versions": "register_version",
+    "/ai/deployments": "create_deployment",
+    "/ai/deployments/config": "update_deployment_config",
+    "/ai/appraisals": "submit_appraisal",
+    "/ai/recommendations": "log_recommendation",
+    "/ai/decisions": "record_decision",
+    "/ai/related-tasks": "link_task",
+    "/ai/evidences": "add_evidence",
+    "/ai/incidents": "report_incident",
+    "/ai/incidents/pause": "pause_for_incident",
+    "/ai/incidents/tracking": "start_tracking",
+    "/ai/incidents/review": "complete_review",
+    "/ai/incidents/recover": "recover_incident",
+    "/ai/incidents/close": "close_incident",
+}
 
 
 def route(service: DomainService, method: str, path: str, body: dict[str, Any] | None,
@@ -44,6 +65,33 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
                 raise ValidationError("site_id 不能为空")
             category = query.get("category", [None])[0]
             return 200, {"items": [item.__dict__ for item in service.list_domain_data(site_id, category)]}
+        if method == "POST" and parsed.path in GOVERNANCE_WRITES:
+            if not isinstance(service, OversightService):
+                return 503, {"error": "governance_disabled", "message": "当前服务实例未启用监管域"}
+            action = getattr(service, GOVERNANCE_WRITES[parsed.path])
+            receipt = action(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "GET" and parsed.path in ("/ai/incidents/timeline", "/ai/recommendations/trace",
+                                               "/ai/versions/profile", "/ai/deployments/overdue"):
+            if not isinstance(service, OversightService):
+                return 503, {"error": "governance_disabled", "message": "当前服务实例未启用监管域"}
+            query = parse_qs(parsed.query)
+            if parsed.path == "/ai/incidents/timeline":
+                incident_id = query.get("incident_id", [""])[0]
+                if not incident_id:
+                    raise ValidationError("incident_id 不能为空")
+                return 200, service.incident_timeline(incident_id)
+            if parsed.path == "/ai/recommendations/trace":
+                recommendation_id = query.get("recommendation_id", [""])[0]
+                if not recommendation_id:
+                    raise ValidationError("recommendation_id 不能为空")
+                return 200, service.recommendation_trace(recommendation_id)
+            if parsed.path == "/ai/versions/profile":
+                version_id = query.get("version_id", [""])[0]
+                if not version_id:
+                    raise ValidationError("version_id 不能为空")
+                return 200, service.version_authorization_profile(version_id)
+            return 200, {"items": service.overdue_reviews()}
         if method == "GET" and parsed.path == "/audit-events":
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
@@ -99,7 +147,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     database = Database(args.database)
-    Handler.service = DomainService(database)
+    Handler.service = OversightService(database)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     try:
         server.serve_forever()

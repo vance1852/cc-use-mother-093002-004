@@ -16,7 +16,12 @@ from .storage import Database
 
 
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{1,63}$")
-ROLES = frozenset({"admin", "operator", "reviewer", "auditor"})
+ROLES = frozenset({
+    "admin", "operator", "reviewer", "auditor",
+    # 医疗智能辅助监管岗位：技术验证、业务签署、安全审批、质量管理、一线临床
+    "technical_reviewer", "clinical_owner", "security_officer",
+    "quality_officer", "clinician",
+})
 
 
 class DomainService:
